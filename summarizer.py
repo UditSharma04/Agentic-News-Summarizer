@@ -1,7 +1,7 @@
 """
 Summarizer Module — Agentic AI Core
 Uses OpenAI for intelligent summaries, trending-topic extraction,
-and structured executive briefings.
+sentiment analysis, chat, and structured executive briefings.
 """
 
 import json
@@ -22,10 +22,6 @@ def _get_client() -> OpenAI:
 # ── Single-article summary ───────────────────────────────────────────────────
 
 def summarize_article(article: dict) -> str:
-    """
-    Produce a rich summary for a single article.
-    Includes key facts, impact assessment, and a 'why it matters' line.
-    """
     if not OPENAI_API_KEY:
         return _fallback_summary(article)
 
@@ -35,7 +31,6 @@ def summarize_article(article: dict) -> str:
     if article.get("content"):
         context_parts.append(f"Content: {article['content'][:2500]}")
     context_parts.append(f"Source: {article['source']}")
-
     context = "\n".join(context_parts)
 
     try:
@@ -68,13 +63,8 @@ def summarize_article(article: dict) -> str:
 # ── Executive briefing ───────────────────────────────────────────────────────
 
 def summarize_all(articles: list[dict]) -> str:
-    """
-    Generate a structured executive briefing from a batch of articles.
-    Identifies top stories, trends, market signals, and quick bites.
-    """
     if not OPENAI_API_KEY:
         return "Set your OPENAI_API_KEY in the .env file to enable AI-powered summaries."
-
     if not articles:
         return "No articles available to summarize."
 
@@ -84,7 +74,6 @@ def summarize_all(articles: list[dict]) -> str:
         if a.get("description"):
             line += f" -- {a['description'][:250]}"
         digest_lines.append(line)
-
     digest = "\n".join(digest_lines)
 
     try:
@@ -121,15 +110,10 @@ def summarize_all(articles: list[dict]) -> str:
 # ── Trending Topics Extraction ───────────────────────────────────────────────
 
 def extract_trending_topics(articles: list[dict]) -> list[str]:
-    """
-    Extract 6-10 trending topic keywords/phrases from article headlines.
-    Returns a list of short topic strings.
-    """
     if not OPENAI_API_KEY or not articles:
         return _fallback_topics(articles)
 
     headlines = " | ".join(a["title"] for a in articles[:40])
-
     try:
         client = _get_client()
         response = client.chat.completions.create(
@@ -158,6 +142,104 @@ def extract_trending_topics(articles: list[dict]) -> list[str]:
     return _fallback_topics(articles)
 
 
+# ── Sentiment Analysis ───────────────────────────────────────────────────────
+
+def analyze_sentiment(articles: list[dict]) -> dict[str, str]:
+    """
+    Analyze sentiment for a batch of articles.
+    Returns {title: "positive" | "negative" | "neutral"} for each article.
+    """
+    if not OPENAI_API_KEY or not articles:
+        return _fallback_sentiment(articles)
+
+    titles = [a["title"] for a in articles[:50]]
+    numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
+
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the sentiment of each tech news headline as exactly one of: "
+                        '"positive", "negative", or "neutral".\n'
+                        "Return ONLY a JSON object mapping headline number (as string) to sentiment.\n"
+                        'Example: {"1": "positive", "2": "negative", "3": "neutral"}\n'
+                        "No explanation. Just the JSON."
+                    ),
+                },
+                {"role": "user", "content": numbered},
+            ],
+            max_tokens=500,
+            temperature=0.1,
+        )
+        raw = response.choices[0].message.content.strip()
+        parsed = json.loads(raw)
+        result: dict[str, str] = {}
+        for i, t in enumerate(titles):
+            s = parsed.get(str(i + 1), "neutral")
+            if s not in ("positive", "negative", "neutral"):
+                s = "neutral"
+            result[t] = s
+        return result
+    except Exception:
+        return _fallback_sentiment(articles)
+
+
+# ── Chat about the news ──────────────────────────────────────────────────────
+
+def chat_about_news(
+    articles: list[dict],
+    user_question: str,
+    history: list[dict],
+) -> str:
+    """
+    Answer a user question about today's news using fetched articles as context.
+    history: list of {"role": "user"|"assistant", "content": str}
+    """
+    if not OPENAI_API_KEY:
+        return "Set your OPENAI_API_KEY in the .env file to use the chat feature."
+
+    # Build article context
+    context_lines: list[str] = []
+    for i, a in enumerate(articles[:40], 1):
+        line = f"{i}. [{a['source']}] {a['title']}"
+        desc = a.get("description", "")
+        if desc:
+            line += f" -- {desc[:200]}"
+        context_lines.append(line)
+    context = "\n".join(context_lines)
+
+    system_msg = (
+        "You are a helpful tech news assistant. The user can ask you questions about "
+        "today's tech news. Below are the articles available today:\n\n"
+        f"{context}\n\n"
+        "Answer the user's question based on these articles. Be concise, insightful, "
+        "and reference specific articles by number when relevant. If the question is "
+        "not related to the available articles, politely say so."
+    )
+
+    messages = [{"role": "system", "content": system_msg}]
+    # Add chat history (last 10 exchanges)
+    for h in history[-20:]:
+        messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": user_question})
+
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            max_tokens=600,
+            temperature=0.4,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Failed to get response: {e}"
+
+
 # ── Fallbacks ─────────────────────────────────────────────────────────────────
 
 def _fallback_summary(article: dict) -> str:
@@ -169,7 +251,6 @@ def _fallback_summary(article: dict) -> str:
 
 
 def _fallback_topics(articles: list[dict]) -> list[str]:
-    """Extract simple topics from titles when no API key."""
     from collections import Counter
     stopwords = {
         "the", "a", "an", "is", "are", "was", "were", "in", "on", "at",
@@ -182,7 +263,29 @@ def _fallback_topics(articles: list[dict]) -> list[str]:
     words: list[str] = []
     for a in articles:
         for w in a["title"].split():
-            clean = w.strip(".,!?:;\"'()-—").capitalize()
+            clean = w.strip(".,!?:;\"'()-\u2014").capitalize()
             if len(clean) > 2 and clean.lower() not in stopwords:
                 words.append(clean)
     return [w for w, _ in Counter(words).most_common(8)]
+
+
+def _fallback_sentiment(articles: list[dict]) -> dict[str, str]:
+    """Simple keyword-based fallback sentiment."""
+    positive_words = {"launch", "growth", "profit", "raise", "fund", "breakthrough",
+                      "success", "win", "award", "record", "boost", "gain", "partner",
+                      "innovation", "upgrade", "improve", "milestone"}
+    negative_words = {"hack", "breach", "layoff", "cut", "loss", "crash", "fail",
+                      "sue", "lawsuit", "fine", "ban", "risk", "threat", "attack",
+                      "vulnerability", "decline", "drop", "warning", "fraud"}
+    result: dict[str, str] = {}
+    for a in articles:
+        words = set(a["title"].lower().split())
+        pos = len(words & positive_words)
+        neg = len(words & negative_words)
+        if pos > neg:
+            result[a["title"]] = "positive"
+        elif neg > pos:
+            result[a["title"]] = "negative"
+        else:
+            result[a["title"]] = "neutral"
+    return result
