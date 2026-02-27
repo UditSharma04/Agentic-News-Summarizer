@@ -17,7 +17,8 @@ from summarizer import (
     analyze_sentiment, chat_about_news,
 )
 from history import save_briefing, load_history
-from emailer import send_news_digest, was_digest_sent_today, get_last_send_info
+from emailer import send_news_digest, was_digest_sent_today, get_last_send_info, get_send_history
+from health_check import run_all_checks
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -176,6 +177,40 @@ section[data-testid="stSidebar"] .stCheckbox{padding-bottom:0}
     font-size:.9rem;line-height:1.75;color:#d8d9de!important;
 }
 .chat-external-box strong{color:#ffb74d!important}
+
+.health-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.7rem;margin:.8rem 0}
+.health-card{
+    background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
+    border-radius:12px;padding:1rem 1.2rem;transition:all .2s;position:relative;overflow:hidden;
+}
+.health-card::before{
+    content:'';position:absolute;top:0;left:0;width:4px;height:100%;border-radius:4px 0 0 4px;
+}
+.health-card.ok::before{background:#5bda7d}
+.health-card.err::before{background:#ff6b6b}
+.health-card.noconf::before{background:#555e6e}
+.health-card:hover{border-color:rgba(108,99,255,.3)}
+.health-name{font-size:.95rem;font-weight:700;color:#ededf2;display:flex;align-items:center}
+.health-type{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#888e99;margin-top:2px}
+.health-status{display:flex;align-items:center;gap:.4rem;margin-top:.45rem;font-size:.82rem;font-weight:600}
+.health-status.ok{color:#5bda7d}
+.health-status.err{color:#ff6b6b}
+.health-status.noconf{color:#888e99}
+.health-msg{font-size:.78rem;color:#9ea3ad;margin-top:.3rem;line-height:1.4}
+.health-latency{
+    position:absolute;top:.85rem;right:1rem;font-size:.72rem;font-weight:700;
+    color:#888e99;background:rgba(255,255,255,.04);padding:.2rem .5rem;border-radius:8px;
+}
+.health-summary{
+    display:flex;gap:1.5rem;align-items:center;padding:.8rem 1.2rem;
+    background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.06);
+    border-radius:12px;margin-bottom:1rem;flex-wrap:wrap;
+}
+.health-summary-item{font-size:.9rem;font-weight:700;display:flex;align-items:center;gap:.4rem}
+.health-summary-item .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.health-summary-item .dot.g{background:#5bda7d}
+.health-summary-item .dot.r{background:#ff6b6b}
+.health-summary-item .dot.y{background:#888e99}
 </style>""", unsafe_allow_html=True)
 
 
@@ -200,32 +235,33 @@ st.markdown(
 )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
+_smtp_ready = bool(SMTP_EMAIL and SMTP_PASSWORD)
+
 with st.sidebar:
     st.markdown("## 📡 Controls")
 
-    st.markdown('<p class="filter-hd">Sources</p>', unsafe_allow_html=True)
-    all_source_names = [s["name"] for s in NEWS_SOURCES]
-    if "sel_sources" not in st.session_state:
-        st.session_state.sel_sources = set(all_source_names)
-    for s in NEWS_SOURCES:
-        on = st.checkbox(s["name"], value=s["name"] in st.session_state.sel_sources, key=f"src_{s['name']}")
-        if on:
-            st.session_state.sel_sources.add(s["name"])
-        else:
-            st.session_state.sel_sources.discard(s["name"])
+    with st.expander("🌐 Sources", expanded=False):
+        all_source_names = [s["name"] for s in NEWS_SOURCES]
+        if "sel_sources" not in st.session_state:
+            st.session_state.sel_sources = set(all_source_names)
+        for s in NEWS_SOURCES:
+            on = st.checkbox(s["name"], value=s["name"] in st.session_state.sel_sources, key=f"src_{s['name']}")
+            if on:
+                st.session_state.sel_sources.add(s["name"])
+            else:
+                st.session_state.sel_sources.discard(s["name"])
     selected_sources = list(st.session_state.sel_sources)
 
-    st.markdown("---")
-    st.markdown('<p class="filter-hd">Categories</p>', unsafe_allow_html=True)
-    all_categories = sorted(set(s["category"] for s in NEWS_SOURCES))
-    if "sel_categories" not in st.session_state:
-        st.session_state.sel_categories = set(all_categories)
-    for c in all_categories:
-        on = st.checkbox(c, value=c in st.session_state.sel_categories, key=f"cat_{c}")
-        if on:
-            st.session_state.sel_categories.add(c)
-        else:
-            st.session_state.sel_categories.discard(c)
+    with st.expander("📂 Categories", expanded=False):
+        all_categories = sorted(set(s["category"] for s in NEWS_SOURCES))
+        if "sel_categories" not in st.session_state:
+            st.session_state.sel_categories = set(all_categories)
+        for c in all_categories:
+            on = st.checkbox(c, value=c in st.session_state.sel_categories, key=f"cat_{c}")
+            if on:
+                st.session_state.sel_categories.add(c)
+            else:
+                st.session_state.sel_categories.discard(c)
     selected_categories = list(st.session_state.sel_categories)
 
     st.markdown("---")
@@ -245,6 +281,10 @@ with st.sidebar:
     else:
         st.markdown('<span class="api-pill no">No API Key</span>', unsafe_allow_html=True)
         st.caption("Add `OPENAI_API_KEY` to `.env`")
+    if _smtp_ready:
+        st.markdown('<span class="api-pill ok">📧 Email Ready</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="api-pill no">📧 Email Not Set</span>', unsafe_allow_html=True)
     st.markdown("")
     st.caption("Built with Streamlit + OpenAI")
 
@@ -351,52 +391,7 @@ if articles:
 st.markdown("")
 
 
-# ── Email Digest (sidebar section + auto-send) ───────────────────────────────
-_smtp_ready = bool(SMTP_EMAIL and SMTP_PASSWORD)
-
-with st.sidebar:
-    st.markdown("---")
-    st.markdown('<p class="filter-hd">📧 Email Digest</p>', unsafe_allow_html=True)
-
-    if not _smtp_ready:
-        st.caption("Add `SMTP_EMAIL` & `SMTP_PASSWORD` to `.env` to enable email digests.")
-    else:
-        _recipient = st.text_input(
-            "Recipient email",
-            value=DIGEST_RECIPIENT,
-            placeholder="you@example.com",
-            key="digest_email_input",
-        )
-
-        last_info = get_last_send_info()
-        if was_digest_sent_today() and last_info:
-            try:
-                _ts = datetime.fromisoformat(last_info["time"])
-                _lbl = _ts.strftime("%H:%M UTC")
-            except Exception:
-                _lbl = "earlier"
-            st.success(f"✅ Sent today at {_lbl} to {last_info['recipient']}", icon="📧")
-
-        if st.button("📧 Send News Digest", use_container_width=True, key="btn_send_digest"):
-            if not _recipient or not _recipient.strip():
-                st.error("Enter a recipient email address.")
-            elif not articles:
-                st.warning("No articles fetched yet.")
-            else:
-                with st.spinner("Sending digest..."):
-                    _ok, _msg = send_news_digest(
-                        SMTP_EMAIL, SMTP_PASSWORD,
-                        _recipient.strip(), articles, topics,
-                    )
-                if _ok:
-                    st.success(_msg, icon="✅")
-                else:
-                    st.error(_msg)
-
-        if DIGEST_RECIPIENT:
-            st.caption(f"Auto-sends to **{DIGEST_RECIPIENT}** on first load each day.")
-
-# Auto-send on first load of the day
+# ── Auto-send email digest on first load of the day ──────────────────────────
 if (
     _smtp_ready
     and DIGEST_RECIPIENT
@@ -413,8 +408,8 @@ if (
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_briefing, tab_articles, tab_analytics, tab_chat, tab_arch = st.tabs([
-    "🧠 AI Briefing", "📰 All Articles", "📊 Analytics", "💬 Ask AI", "🏗️ How It Works"
+tab_briefing, tab_articles, tab_analytics, tab_chat, tab_email, tab_arch = st.tabs([
+    "🧠 AI Briefing", "📰 All Articles", "📊 Analytics", "💬 Ask AI", "📧 Email Digest", "🏗️ How It Works",
 ])
 
 
@@ -552,13 +547,93 @@ with tab_articles:
 
 # ━━ Tab 3: Analytics ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tab_analytics:
-    st.markdown("### Analytics Dashboard")
-    st.caption("Visual breakdown of today's tech news landscape.")
+    st.markdown("### Analytics & Service Health")
+    st.caption("Monitor service health and explore visual analytics of today's news.")
+
+    # ── Service Health Dashboard (top) ────────────────────────────────────────
+    _health_icons = {
+        "TechCrunch": _favicon("techcrunch.com"),
+        "The Verge": _favicon("theverge.com"),
+        "Ars Technica": _favicon("arstechnica.com"),
+        "Wired": _favicon("wired.com"),
+        "Hacker News": _favicon("news.ycombinator.com"),
+        "MIT Technology Review": _favicon("technologyreview.com"),
+        "VentureBeat": _favicon("venturebeat.com"),
+        "The Register": _favicon("theregister.com"),
+        "OpenAI": _favicon("openai.com"),
+        "Gmail SMTP": _favicon("gmail.com"),
+    }
+
+    st.markdown("#### 🩺 Service Health")
+    if st.button("🔍 Check App Health", type="primary", key="btn_health"):
+        with st.spinner("Pinging all services..."):
+            health_results = run_all_checks()
+        st.session_state.health_results = health_results
+
+    if "health_results" in st.session_state:
+        results = st.session_state.health_results
+        healthy = sum(1 for r in results if r["status"] == "healthy")
+        errors = sum(1 for r in results if r["status"] == "error")
+        not_conf = sum(1 for r in results if r["status"] == "not_configured")
+        active_results = [r for r in results if r["latency_ms"] > 0]
+        avg_latency = round(
+            sum(r["latency_ms"] for r in active_results)
+            / max(len(active_results), 1)
+        )
+
+        st.markdown(
+            f'<div class="health-summary">'
+            f'<span class="health-summary-item"><span class="dot g"></span> {healthy} Healthy</span>'
+            f'<span class="health-summary-item"><span class="dot r"></span> {errors} Error{"s" if errors != 1 else ""}</span>'
+            f'<span class="health-summary-item"><span class="dot y"></span> {not_conf} Not Configured</span>'
+            f'<span class="health-summary-item" style="margin-left:auto;color:#888e99;font-weight:400">'
+            f'Avg latency: <strong>{avg_latency}ms</strong></span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        cards_html = '<div class="health-grid">'
+        for r in results:
+            status = r["status"]
+            if status == "healthy":
+                cls, status_icon, label = "ok", "✅", "Healthy"
+            elif status == "error":
+                cls, status_icon, label = "err", "❌", "Error"
+            else:
+                cls, status_icon, label = "noconf", "⚪", "Not Configured"
+
+            latency_html = ""
+            if r["latency_ms"] > 0:
+                latency_html = f'<span class="health-latency">{r["latency_ms"]}ms</span>'
+
+            icon_url = _health_icons.get(r["name"], "")
+            icon_img = (
+                f'<img src="{icon_url}" style="width:22px;height:22px;border-radius:4px;'
+                f'vertical-align:middle;margin-right:6px" alt="">'
+                if icon_url else ""
+            )
+
+            cards_html += (
+                f'<div class="health-card {cls}">'
+                f'{latency_html}'
+                f'<div class="health-name">{icon_img}{r["name"]}</div>'
+                f'<div class="health-type">{r["type"]}</div>'
+                f'<div class="health-status {cls}">{status_icon} {label}</div>'
+                f'<div class="health-msg">{r["message"]}</div>'
+                f'</div>'
+            )
+        cards_html += '</div>'
+        st.markdown(cards_html, unsafe_allow_html=True)
+    else:
+        st.info("Click **Check App Health** to ping all services and see their status.", icon="💡")
+
+    # ── Charts ────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 📊 News Analytics")
 
     if not articles:
         st.warning("No articles to analyze.")
     else:
-        # Dark theme for Altair
         dark_config = {
             "config": {
                 "background": "transparent",
@@ -576,7 +651,6 @@ with tab_analytics:
 
         chart_left, chart_right = st.columns(2)
 
-        # 1. Articles per source
         with chart_left:
             st.markdown("##### Articles by Source")
             src_df = pd.DataFrame([{"Source": a["source"]} for a in articles])
@@ -588,7 +662,6 @@ with tab_analytics:
             ).properties(height=250)
             st.altair_chart(c, use_container_width=True)
 
-        # 2. Category distribution
         with chart_right:
             st.markdown("##### Category Distribution")
             cat_df = pd.DataFrame([{"Category": a["category"]} for a in articles])
@@ -603,7 +676,6 @@ with tab_analytics:
 
         chart_left2, chart_right2 = st.columns(2)
 
-        # 3. Publish timeline
         with chart_left2:
             st.markdown("##### Publish Timeline (by hour)")
             time_data = []
@@ -620,7 +692,6 @@ with tab_analytics:
             else:
                 st.caption("No timestamp data available.")
 
-        # 4. Sentiment breakdown
         with chart_right2:
             st.markdown("##### Sentiment Breakdown")
             if sentiment_map:
@@ -761,12 +832,156 @@ with tab_chat:
         })
 
 
-# ━━ Tab 5: How It Works ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━ Tab 5: Email Digest ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with tab_email:
+    st.markdown("### 📧 Email News Digest")
+    st.caption("Send a beautifully formatted email digest of today's top tech news.")
+
+    if not _smtp_ready:
+        st.warning(
+            "**Email not configured.** Add these to your `.env` file to get started:\n\n"
+            "```\n"
+            "SMTP_EMAIL=your.gmail@gmail.com\n"
+            "SMTP_PASSWORD=your-app-password\n"
+            "```\n\n"
+            "Use a [Gmail App Password](https://myaccount.google.com/apppasswords), "
+            "not your regular password.",
+            icon="🔒",
+        )
+    else:
+        # ── Send section ─────────────────────────────────────────────────────
+        send_col, preview_col = st.columns([1, 1])
+
+        with send_col:
+            st.markdown("#### Send Digest")
+            _recipient = st.text_input(
+                "Recipient email",
+                value=DIGEST_RECIPIENT,
+                placeholder="you@example.com",
+                key="digest_email_input",
+            )
+
+            if was_digest_sent_today():
+                last_info = get_last_send_info()
+                if last_info:
+                    try:
+                        _ts = datetime.fromisoformat(last_info["time"])
+                        _lbl = _ts.strftime("%H:%M UTC")
+                    except Exception:
+                        _lbl = "earlier"
+                    st.success(
+                        f"Today's digest sent at **{_lbl}** to **{last_info['recipient']}** "
+                        f"({last_info['article_count']} articles)",
+                        icon="✅",
+                    )
+
+            if st.button(
+                "📧 Send News Digest Now",
+                type="primary",
+                use_container_width=True,
+                key="btn_send_digest",
+            ):
+                if not _recipient or not _recipient.strip():
+                    st.error("Enter a recipient email address.")
+                elif not articles:
+                    st.warning("No articles fetched yet.")
+                else:
+                    with st.spinner("Sending digest..."):
+                        _ok, _msg = send_news_digest(
+                            SMTP_EMAIL, SMTP_PASSWORD,
+                            _recipient.strip(), articles, topics,
+                        )
+                    if _ok:
+                        st.success(_msg, icon="✅")
+                        st.balloons()
+                    else:
+                        st.error(_msg)
+
+            st.markdown("")
+            st.markdown("#### Settings")
+            st.markdown(
+                f"**SMTP Account:** `{SMTP_EMAIL}`\n\n"
+                f"**Auto-send:** {'✅ Enabled' if DIGEST_RECIPIENT else '❌ Disabled'}"
+            )
+            if DIGEST_RECIPIENT:
+                st.caption(
+                    f"Auto-sends to **{DIGEST_RECIPIENT}** on first app load each day. "
+                    f"Set `DIGEST_RECIPIENT` in `.env` to change or remove."
+                )
+            else:
+                st.caption(
+                    "Set `DIGEST_RECIPIENT` in `.env` to auto-send a digest "
+                    "every time the app is loaded fresh each day."
+                )
+
+        with preview_col:
+            st.markdown("#### Email Preview")
+            if not articles:
+                st.info("No articles fetched yet. Preview will appear once articles load.")
+            else:
+                preview_count = min(len(articles), 15)
+                st.caption(f"Digest will include **{preview_count}** articles and trending topics.")
+                st.markdown(
+                    '<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);'
+                    'border-radius:12px;padding:1rem 1.2rem;max-height:400px;overflow-y:auto;">',
+                    unsafe_allow_html=True,
+                )
+                if topics:
+                    pills = " ".join(
+                        f'`{t}`' for t in topics
+                    )
+                    st.markdown(f"**🔥 Trending:** {pills}")
+                    st.markdown("")
+                for i, a in enumerate(articles[:8], 1):
+                    pub = ""
+                    if a.get("published"):
+                        pub = a["published"].strftime("%b %d, %H:%M")
+                    st.markdown(
+                        f"**{i}. {a['title']}**\n\n"
+                        f"<small style='color:#888'>{a['source']}"
+                        f"{'&nbsp;·&nbsp;' + pub if pub else ''}"
+                        f"&nbsp;·&nbsp;{a.get('category', '')}</small>",
+                        unsafe_allow_html=True,
+                    )
+                if len(articles) > 8:
+                    st.caption(f"... and {preview_count - 8} more articles")
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Send history ─────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Send History")
+        email_history = get_send_history()
+        if not email_history:
+            st.caption("No digests sent yet. Send one above to get started!")
+        else:
+            hist_data = []
+            for entry in email_history[:15]:
+                try:
+                    dt = datetime.fromisoformat(entry["time"])
+                    date_str = dt.strftime("%b %d, %Y")
+                    time_str = dt.strftime("%H:%M UTC")
+                except Exception:
+                    date_str = entry.get("date", "?")
+                    time_str = "?"
+                hist_data.append({
+                    "Date": date_str,
+                    "Time": time_str,
+                    "Recipient": entry.get("recipient", "?"),
+                    "Articles": entry.get("article_count", "?"),
+                })
+            st.dataframe(
+                hist_data,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+# ━━ Tab 6: How It Works ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tab_arch:
     st.markdown("### Application Architecture")
-    st.caption("End-to-end data flow from news sources to AI-powered summaries.")
+    st.caption("End-to-end data flow — from news sources through AI processing to email delivery and health monitoring.")
 
-    st.markdown("""<svg viewBox="0 0 800 520" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:800px;margin:1rem auto;display:block">
+    st.markdown("""<svg viewBox="0 0 800 640" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:800px;margin:1rem auto;display:block">
   <defs>
     <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#302b63"/>
@@ -779,13 +994,21 @@ with tab_arch:
     .box-api{fill:rgba(253,126,20,0.08);stroke:#fd7e14;stroke-width:1.5;rx:10}
     .box-out{fill:rgba(40,167,69,0.08);stroke:#28a745;stroke-width:1.5;rx:10}
     .box-core{fill:url(#g1);stroke:#6c63ff;stroke-width:2;rx:12;filter:url(#shadow)}
+    .box-email{fill:rgba(255,183,77,0.08);stroke:#ffb74d;stroke-width:1.5;rx:10}
+    .box-health{fill:rgba(77,208,225,0.08);stroke:#4dd0e1;stroke-width:1.5;rx:10}
     .label{fill:#dddaf5;font-size:12px;font-weight:700;font-family:sans-serif;text-anchor:middle}
     .sublabel{fill:#888e99;font-size:9px;font-family:sans-serif;text-anchor:middle}
     .arrow{stroke:#6c63ff;stroke-width:2;marker-end:url(#ah)}
+    .arrow-o{stroke:#ffb74d;stroke-width:1.5;stroke-dasharray:5,3;marker-end:url(#aho)}
   </style>
   <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
     <path d="M0,0 L8,3 L0,6" fill="#6c63ff"/>
   </marker>
+  <marker id="aho" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+    <path d="M0,0 L8,3 L0,6" fill="#ffb74d"/>
+  </marker>
+
+  <!-- Row 1: Sources -->
   <rect class="box" x="20" y="10" width="110" height="50"/>
   <text class="label" x="75" y="33">TechCrunch</text>
   <text class="sublabel" x="75" y="48">RSS Feed</text>
@@ -802,38 +1025,78 @@ with tab_arch:
   <text class="label" x="575" y="33" style="fill:#ffa54c">Hacker News</text>
   <text class="sublabel" x="575" y="48">REST API</text>
   <rect class="box" x="645" y="10" width="130" height="50"/>
-  <text class="label" x="710" y="28">MIT Tech</text>
-  <text class="sublabel" x="710" y="42">Review</text>
-  <text class="sublabel" x="710" y="53">RSS Feed</text>
+  <text class="label" x="710" y="28">+3 More</text>
+  <text class="sublabel" x="710" y="42">MIT, VB,</text>
+  <text class="sublabel" x="710" y="53">Register</text>
+
+  <!-- Arrows: Sources → Fetcher -->
   <line class="arrow" x1="75" y1="60" x2="400" y2="115"/>
   <line class="arrow" x1="200" y1="60" x2="400" y2="115"/>
   <line class="arrow" x1="325" y1="60" x2="400" y2="115"/>
   <line class="arrow" x1="450" y1="60" x2="400" y2="115"/>
   <line class="arrow" x1="575" y1="60" x2="400" y2="115"/>
   <line class="arrow" x1="710" y1="60" x2="400" y2="115"/>
+
+  <!-- Row 2: Fetcher -->
   <rect class="box-core" x="260" y="115" width="280" height="55"/>
   <text class="label" x="400" y="140" style="font-size:14px">News Fetcher</text>
   <text class="sublabel" x="400" y="158">news_fetcher.py &middot; feedparser + requests</text>
   <line class="arrow" x1="400" y1="170" x2="400" y2="200"/>
+
+  <!-- Row 3: Parse -->
   <rect class="box-core" x="260" y="200" width="280" height="55"/>
   <text class="label" x="400" y="225" style="font-size:14px">Parse &amp; Clean</text>
   <text class="sublabel" x="400" y="243">BeautifulSoup &middot; HTML strip &middot; Normalize</text>
   <line class="arrow" x1="400" y1="255" x2="400" y2="285"/>
+
+  <!-- Row 4: Dedup -->
   <rect class="box-core" x="260" y="285" width="280" height="55"/>
   <text class="label" x="400" y="310" style="font-size:14px">Categorize &amp; Deduplicate</text>
   <text class="sublabel" x="400" y="328">Category mapping &middot; Title similarity check</text>
-  <line class="arrow" x1="340" y1="340" x2="220" y2="385"/>
-  <line class="arrow" x1="460" y1="340" x2="580" y2="385"/>
-  <rect class="box-out" x="120" y="385" width="200" height="55"/>
-  <text class="label" x="220" y="408" style="fill:#5bda7d;font-size:13px">Display Articles</text>
-  <text class="sublabel" x="220" y="428">Streamlit UI &middot; Cards &middot; Search</text>
-  <rect class="box-core" x="480" y="385" width="200" height="55"/>
-  <text class="label" x="580" y="408" style="font-size:13px">AI Summarizer</text>
-  <text class="sublabel" x="580" y="428">OpenAI GPT &middot; Agentic prompts</text>
-  <line class="arrow" x1="220" y1="440" x2="400" y2="480"/>
-  <line class="arrow" x1="580" y1="440" x2="400" y2="480"/>
-  <rect class="box-out" x="250" y="475" width="300" height="40" style="filter:url(#shadow)"/>
-  <text class="label" x="400" y="500" style="fill:#5bda7d;font-size:13px">Articles + Summaries + Briefing</text>
+
+  <!-- Arrows: Dedup → 4 outputs -->
+  <line class="arrow" x1="330" y1="340" x2="105" y2="390"/>
+  <line class="arrow" x1="370" y1="340" x2="295" y2="390"/>
+  <line class="arrow" x1="430" y1="340" x2="490" y2="390"/>
+  <line class="arrow" x1="470" y1="340" x2="670" y2="390"/>
+
+  <!-- Row 5: Four output boxes -->
+  <rect class="box-out" x="20" y="390" width="170" height="55"/>
+  <text class="label" x="105" y="413" style="fill:#5bda7d;font-size:12px">Display Articles</text>
+  <text class="sublabel" x="105" y="430">UI &middot; Cards &middot; Search &middot; Sort</text>
+
+  <rect class="box-core" x="210" y="390" width="170" height="55"/>
+  <text class="label" x="295" y="413" style="font-size:12px">AI Engine</text>
+  <text class="sublabel" x="295" y="430">Chat &middot; Summary &middot; Briefing</text>
+
+  <rect class="box-email" x="400" y="390" width="180" height="55"/>
+  <text class="label" x="490" y="413" style="fill:#ffb74d;font-size:12px">Email Digest</text>
+  <text class="sublabel" x="490" y="430">Gmail SMTP &middot; HTML &middot; Auto-send</text>
+
+  <rect class="box-health" x="600" y="390" width="170" height="55"/>
+  <text class="label" x="685" y="413" style="fill:#4dd0e1;font-size:12px">Health Monitor</text>
+  <text class="sublabel" x="685" y="430">Concurrent pings &middot; Latency</text>
+
+  <!-- Google News fallback (dashed arrow into AI Engine) -->
+  <rect class="box-api" x="5" y="475" width="185" height="42"/>
+  <text class="label" x="97" y="494" style="fill:#ffa54c;font-size:11px">Google News RSS</text>
+  <text class="sublabel" x="97" y="508">Web search fallback &middot; 48h</text>
+  <line class="arrow-o" x1="190" y1="490" x2="260" y2="445"/>
+
+  <!-- Arrows: outputs → final -->
+  <line class="arrow" x1="105" y1="445" x2="340" y2="560"/>
+  <line class="arrow" x1="295" y1="445" x2="370" y2="560"/>
+  <line class="arrow" x1="490" y1="445" x2="430" y2="560"/>
+  <line class="arrow" x1="685" y1="445" x2="460" y2="560"/>
+
+  <!-- Health Monitor side arrows (checking sources) -->
+  <line class="arrow-o" x1="685" y1="390" x2="685" y2="70" style="stroke:#4dd0e1;stroke-dasharray:4,4;stroke-width:1;opacity:.4;marker-end:none"/>
+  <text class="sublabel" x="730" y="230" style="fill:#4dd0e1;font-size:8px;writing-mode:tb">health checks</text>
+
+  <!-- Final output -->
+  <rect class="box-out" x="250" y="555" width="300" height="45" style="filter:url(#shadow)"/>
+  <text class="label" x="400" y="575" style="fill:#5bda7d;font-size:13px">Full-Stack AI News Platform</text>
+  <text class="sublabel" x="400" y="590">Articles + Summaries + Email + Monitoring</text>
 </svg>""", unsafe_allow_html=True)
 
     st.markdown("")
@@ -867,12 +1130,25 @@ with tab_arch:
          "<strong>Per-article summaries</strong> include key facts, why it matters, and key players. "
          "<strong>Executive briefings</strong> include Top Stories, Trends, Market Signals, and Quick Bites. "
          "Briefings are <strong>auto-saved</strong> to local JSON for history."),
-        ("Ask AI Chat",
-         "A <strong>conversational interface</strong> lets users ask questions about today's news. "
-         "All fetched articles are injected as context into the system prompt. "
-         "Chat history is maintained throughout the session."),
+        ("Smart AI Chat",
+         "The chat uses <strong>structured JSON responses</strong> from GPT to determine if the "
+         "user's question matches any fetched article. <strong>If found:</strong> shows a brief, "
+         "highlighted clickable links to matching articles, and a <strong>Get Summary</strong> button "
+         "for each. <strong>If not found:</strong> automatically searches <strong>Google News RSS</strong> "
+         "for real articles from the last 48 hours, then summarizes those results &mdash; no hallucination."),
+        ("Email Digest",
+         "A <strong>Gmail SMTP</strong> integration sends beautifully formatted HTML email digests "
+         "with trending topics and top stories. Supports <strong>manual send</strong> from the Email tab "
+         "and <strong>auto-send on first daily load</strong> when <code>DIGEST_RECIPIENT</code> is configured. "
+         "Send history is tracked in a local JSON log. Uses <code>smtplib</code> with TLS encryption."),
+        ("Service Health Monitor",
+         "A <strong>concurrent health checker</strong> pings all external services in parallel: "
+         "8 RSS/Atom feeds, Hacker News API, OpenAI API, and Gmail SMTP. Each check reports "
+         "<strong>status, latency,</strong> and a descriptive message. Results display as a card grid "
+         "with <strong>brand favicons</strong> and color-coded health indicators."),
         ("Analytics Dashboard",
-         "Four <strong>Altair charts</strong> visualize the news landscape: articles per source, "
+         "The <strong>health dashboard</strong> sits at the top for quick service monitoring. "
+         "Below, four <strong>Altair charts</strong> visualize the news landscape: articles per source, "
          "category distribution (donut), publish timeline by hour, and sentiment breakdown per source."),
     ]
     for i, (title, desc) in enumerate(steps, 1):
@@ -892,19 +1168,29 @@ with tab_arch:
         '<li><code>Altair</code> &mdash; Interactive charts</li>'
         '<li>SVG &mdash; Architecture diagram</li></ul></div>'
         '<div><h3 style="font-size:1rem">Data Layer</h3><ul>'
-        '<li><code>feedparser</code> &mdash; RSS/Atom parsing</li>'
+        '<li><code>feedparser</code> &mdash; RSS/Atom + Google News</li>'
         '<li><code>requests</code> &mdash; HTTP &amp; API calls</li>'
         '<li><code>BeautifulSoup</code> &mdash; HTML cleaning</li>'
         '<li><code>ThreadPoolExecutor</code> &mdash; Concurrent fetching</li></ul></div>'
         '<div><h3 style="font-size:1rem">AI / LLM</h3><ul>'
         '<li><code>OpenAI GPT-4o-mini</code> &mdash; Summarization</li>'
         '<li>Sentiment analysis &mdash; Batch classification</li>'
-        '<li>Chat &mdash; Article-context-aware Q&amp;A</li>'
-        '<li>JSON extraction &mdash; Topics &amp; sentiment</li></ul></div>'
+        '<li>Smart Chat &mdash; JSON structured responses</li>'
+        '<li>Web fallback &mdash; Google News RSS + AI summary</li></ul></div>'
+        '<div><h3 style="font-size:1rem">Email</h3><ul>'
+        '<li><code>smtplib</code> &mdash; Gmail SMTP with TLS</li>'
+        '<li><code>email.mime</code> &mdash; HTML email builder</li>'
+        '<li>Auto-send &mdash; Daily digest on first load</li>'
+        '<li>Send history &mdash; JSON log tracking</li></ul></div>'
+        '<div><h3 style="font-size:1rem">Monitoring</h3><ul>'
+        '<li>Health checks &mdash; All services concurrently</li>'
+        '<li>Latency tracking &mdash; Per-service ms timing</li>'
+        '<li>Brand favicons &mdash; Google Favicon API</li>'
+        '<li>Status grid &mdash; Healthy / Error / Not Configured</li></ul></div>'
         '<div><h3 style="font-size:1rem">Infrastructure</h3><ul>'
         '<li><code>python-dotenv</code> &mdash; Config management</li>'
         '<li><code>@st.cache_data</code> &mdash; 10-min TTL cache</li>'
-        '<li>Local JSON &mdash; Briefing history persistence</li>'
+        '<li>Local JSON &mdash; Briefing + email history</li>'
         '<li>Title deduplication &mdash; 70% overlap threshold</li></ul></div>'
         '</div></div>',
         unsafe_allow_html=True)

@@ -51,6 +51,12 @@ def get_last_send_info() -> dict | None:
     }
 
 
+def get_send_history() -> list[dict]:
+    """Return the list of past email sends (newest first)."""
+    log = _load_email_log()
+    return log.get("history", [])
+
+
 def _mark_sent_today(recipient: str, article_count: int) -> None:
     log = _load_email_log()
     log["last_sent_date"] = date.today().isoformat()

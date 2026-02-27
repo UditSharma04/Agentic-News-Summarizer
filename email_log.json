@@ -1,9 +1,15 @@
 {
   "last_sent_date": "2026-02-27",
-  "last_sent_time": "2026-02-27T03:57:41.401441+00:00",
-  "last_recipient": "udit.sharma2022@vitstudent.ac.in",
-  "last_article_count": 77,
+  "last_sent_time": "2026-02-27T04:11:50.466541+00:00",
+  "last_recipient": "work.udit04@gmail.com",
+  "last_article_count": 47,
   "history": [
+    {
+      "date": "2026-02-27",
+      "time": "2026-02-27T04:11:50.466574+00:00",
+      "recipient": "work.udit04@gmail.com",
+      "article_count": 47
+    },
     {
       "date": "2026-02-27",
       "time": "2026-02-27T03:57:41.401471+00:00",
