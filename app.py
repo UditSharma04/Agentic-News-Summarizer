@@ -10,13 +10,14 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, timezone
 
-from config import NEWS_SOURCES, OPENAI_API_KEY
+from config import NEWS_SOURCES, OPENAI_API_KEY, SMTP_EMAIL, SMTP_PASSWORD, DIGEST_RECIPIENT
 from news_fetcher import fetch_all_news, fetch_article_body
 from summarizer import (
     summarize_article, summarize_all, extract_trending_topics,
     analyze_sentiment, chat_about_news,
 )
 from history import save_briefing, load_history
+from emailer import send_news_digest, was_digest_sent_today, get_last_send_info
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -330,12 +331,13 @@ with c5:
 
 
 # ── Trending Topics ───────────────────────────────────────────────────────────
-if articles:
-    @st.cache_data(ttl=600, show_spinner=False)
-    def _cached_topics(titles_joined: str) -> list[str]:
-        titles = titles_joined.split(" ||| ")
-        return extract_trending_topics([{"title": t} for t in titles])
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_topics(titles_joined: str) -> list[str]:
+    titles = titles_joined.split(" ||| ")
+    return extract_trending_topics([{"title": t} for t in titles])
 
+topics: list[str] = []
+if articles:
     _topics_key = " ||| ".join(a["title"] for a in articles[:30])
     topics = _cached_topics(_topics_key)
     if topics:
@@ -347,6 +349,67 @@ if articles:
             unsafe_allow_html=True)
 
 st.markdown("")
+
+
+# ── Email Digest (sidebar section + auto-send) ───────────────────────────────
+_smtp_ready = bool(SMTP_EMAIL and SMTP_PASSWORD)
+
+with st.sidebar:
+    st.markdown("---")
+    st.markdown('<p class="filter-hd">📧 Email Digest</p>', unsafe_allow_html=True)
+
+    if not _smtp_ready:
+        st.caption("Add `SMTP_EMAIL` & `SMTP_PASSWORD` to `.env` to enable email digests.")
+    else:
+        _recipient = st.text_input(
+            "Recipient email",
+            value=DIGEST_RECIPIENT,
+            placeholder="you@example.com",
+            key="digest_email_input",
+        )
+
+        last_info = get_last_send_info()
+        if was_digest_sent_today() and last_info:
+            try:
+                _ts = datetime.fromisoformat(last_info["time"])
+                _lbl = _ts.strftime("%H:%M UTC")
+            except Exception:
+                _lbl = "earlier"
+            st.success(f"✅ Sent today at {_lbl} to {last_info['recipient']}", icon="📧")
+
+        if st.button("📧 Send News Digest", use_container_width=True, key="btn_send_digest"):
+            if not _recipient or not _recipient.strip():
+                st.error("Enter a recipient email address.")
+            elif not articles:
+                st.warning("No articles fetched yet.")
+            else:
+                with st.spinner("Sending digest..."):
+                    _ok, _msg = send_news_digest(
+                        SMTP_EMAIL, SMTP_PASSWORD,
+                        _recipient.strip(), articles, topics,
+                    )
+                if _ok:
+                    st.success(_msg, icon="✅")
+                else:
+                    st.error(_msg)
+
+        if DIGEST_RECIPIENT:
+            st.caption(f"Auto-sends to **{DIGEST_RECIPIENT}** on first load each day.")
+
+# Auto-send on first load of the day
+if (
+    _smtp_ready
+    and DIGEST_RECIPIENT
+    and articles
+    and not was_digest_sent_today()
+    and "auto_digest_attempted" not in st.session_state
+):
+    st.session_state.auto_digest_attempted = True
+    _ok, _msg = send_news_digest(
+        SMTP_EMAIL, SMTP_PASSWORD, DIGEST_RECIPIENT, articles, topics,
+    )
+    if _ok:
+        st.toast(f"📧 Daily digest auto-sent to {DIGEST_RECIPIENT}!", icon="✅")
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
