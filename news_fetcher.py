@@ -9,7 +9,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 import feedparser
 import requests
@@ -149,6 +149,39 @@ def fetch_article_body(url: str) -> str:
         return text[:4000]
     except Exception:
         return ""
+
+
+# ── Web news search (Google News RSS) ─────────────────────────────────────────
+
+def search_web_news(query: str, max_results: int = 5) -> list[dict]:
+    """Search Google News RSS for recent articles about a topic (last 48 hours)."""
+    try:
+        search_url = (
+            f"https://news.google.com/rss/search?"
+            f"q={quote_plus(query)}+when:2d&hl=en-US&gl=US&ceid=US:en"
+        )
+        feed = feedparser.parse(search_url)
+        results = []
+        for entry in feed.entries[:max_results]:
+            source_name = ""
+            if hasattr(entry, "source"):
+                source_name = entry.source.get("title", "")
+
+            title = entry.get("title", "Untitled")
+            if source_name and title.endswith(f" - {source_name}"):
+                title = title[: -len(f" - {source_name}")]
+
+            results.append({
+                "title": title,
+                "url": entry.get("link", ""),
+                "description": _clean_html(entry.get("summary", "")),
+                "source": source_name,
+                "published": _parse_date(entry),
+            })
+        return results
+    except Exception as e:
+        print(f"[WARNING] Web news search failed: {e}")
+        return []
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────

@@ -188,21 +188,83 @@ def analyze_sentiment(articles: list[dict]) -> dict[str, str]:
         return _fallback_sentiment(articles)
 
 
+# ── Web search fallback for chat ──────────────────────────────────────────────
+
+def _enrich_from_web(
+    client: OpenAI,
+    user_question: str,
+    fallback_response: str,
+) -> tuple[list[dict], str]:
+    """Search Google News for the topic and build a response from real results.
+
+    Returns (web_results, response_text).
+    """
+    from news_fetcher import search_web_news
+
+    web_results_raw = search_web_news(user_question, max_results=5)
+    if not web_results_raw:
+        return [], fallback_response
+
+    web_context = "\n".join(
+        f"- [{r['source']}] {r['title']}: {r['description'][:250]}"
+        for r in web_results_raw
+    )
+
+    try:
+        web_resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a tech news assistant. The user asked about a topic "
+                        "not covered in the local article feed. Below are real search "
+                        "results from Google News (last 48 hours):\n\n"
+                        f"{web_context}\n\n"
+                        "Write a concise, factual summary paragraph based ONLY on "
+                        "these search results. Reference specific findings. If the "
+                        "results are not relevant to the user's question, say so "
+                        "honestly and briefly explain what the results do cover."
+                    ),
+                },
+                {"role": "user", "content": user_question},
+            ],
+            max_tokens=600,
+            temperature=0.3,
+        )
+        response_text = web_resp.choices[0].message.content.strip()
+    except Exception:
+        response_text = fallback_response
+
+    web_results = [
+        {"title": r["title"], "url": r["url"], "source": r["source"]}
+        for r in web_results_raw
+    ]
+    return web_results, response_text
+
+
 # ── Chat about the news ──────────────────────────────────────────────────────
 
 def chat_about_news(
     articles: list[dict],
     user_question: str,
     history: list[dict],
-) -> str:
+) -> dict:
     """
     Answer a user question about today's news using fetched articles as context.
-    history: list of {"role": "user"|"assistant", "content": str}
+    Returns a dict with: found, matched_articles, brief, response.
     """
-    if not OPENAI_API_KEY:
-        return "Set your OPENAI_API_KEY in the .env file to use the chat feature."
+    empty_result = {
+        "found": False, "matched_articles": [], "web_results": [],
+        "brief": "", "response": "",
+    }
 
-    # Build article context
+    if not OPENAI_API_KEY:
+        empty_result["response"] = (
+            "Set your OPENAI_API_KEY in the .env file to use the chat feature."
+        )
+        return empty_result
+
     context_lines: list[str] = []
     for i, a in enumerate(articles[:40], 1):
         line = f"{i}. [{a['source']}] {a['title']}"
@@ -213,31 +275,85 @@ def chat_about_news(
     context = "\n".join(context_lines)
 
     system_msg = (
-        "You are a helpful tech news assistant. The user can ask you questions about "
+        "You are a helpful tech news assistant. The user can ask questions about "
         "today's tech news. Below are the articles available today:\n\n"
         f"{context}\n\n"
-        "Answer the user's question based on these articles. Be concise, insightful, "
-        "and reference specific articles by number when relevant. If the question is "
-        "not related to the available articles, politely say so."
+        "You MUST respond in valid JSON with exactly these fields:\n"
+        "{\n"
+        '  "found_in_articles": true or false,\n'
+        '  "article_numbers": [1-indexed numbers of relevant articles],\n'
+        '  "brief": "1-2 sentence summary of the matched news",\n'
+        '  "response": "Your full detailed response"\n'
+        "}\n\n"
+        "Rules:\n"
+        "- If the user's question relates to ANY of the listed articles, set "
+        "found_in_articles to true, list ALL matching article_numbers, write a "
+        "concise brief, and give an insightful response.\n"
+        "- If the topic is NOT covered by any listed article, set found_in_articles "
+        "to false, article_numbers to [], brief to \"\", and in the response field "
+        "provide a helpful, informative paragraph about the topic based on your "
+        "knowledge. Focus strictly on developments from the last 48 hours. Be "
+        "factual and current.\n"
+        "- Always return valid JSON only, no markdown code fences."
     )
 
     messages = [{"role": "system", "content": system_msg}]
-    # Add chat history (last 10 exchanges)
     for h in history[-20:]:
         messages.append({"role": h["role"], "content": h["content"]})
     messages.append({"role": "user", "content": user_question})
 
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=messages,
-            max_tokens=600,
+            max_tokens=800,
             temperature=0.4,
+            response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content.strip()
+        raw = resp.choices[0].message.content.strip()
+        parsed = json.loads(raw)
+
+        found = parsed.get("found_in_articles", False)
+        article_nums = parsed.get("article_numbers", [])
+        brief = parsed.get("brief", "")
+        response_text = parsed.get("response", "")
+
+        matched_articles = []
+        for n in article_nums:
+            if isinstance(n, int) and 1 <= n <= len(articles):
+                a = articles[n - 1]
+                matched_articles.append({
+                    "title": a["title"],
+                    "url": a["url"],
+                    "source": a["source"],
+                    "description": a.get("description", "")[:300],
+                    "content": a.get("content", ""),
+                    "category": a.get("category", ""),
+                })
+
+        if not found:
+            web_results, response_text = _enrich_from_web(
+                client, user_question, response_text,
+            )
+            return {
+                "found": False,
+                "matched_articles": [],
+                "web_results": web_results,
+                "brief": "",
+                "response": response_text,
+            }
+
+        return {
+            "found": True,
+            "matched_articles": matched_articles,
+            "web_results": [],
+            "brief": brief,
+            "response": response_text,
+        }
     except Exception as e:
-        return f"Failed to get response: {e}"
+        empty_result["response"] = f"Failed to get response: {e}"
+        return empty_result
 
 
 # ── Fallbacks ─────────────────────────────────────────────────────────────────

@@ -150,6 +150,31 @@ section[data-testid="stSidebar"] .stCheckbox{padding-bottom:0}
 .api-pill{display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .75rem;border-radius:20px;font-size:.78rem;font-weight:600}
 .api-pill.ok{background:rgba(40,167,69,.1);color:#5bda7d;border:1px solid rgba(40,167,69,.22)}
 .api-pill.no{background:rgba(255,193,7,.08);color:#ffc940;border:1px solid rgba(255,193,7,.18)}
+
+.chat-article-link{
+    display:flex;align-items:center;gap:.6rem;
+    background:rgba(108,99,255,.06);border:1px solid rgba(108,99,255,.22);
+    border-radius:10px;padding:.75rem 1rem;margin:.4rem 0;transition:all .2s;
+}
+.chat-article-link:hover{border-color:#6c63ff;background:rgba(108,99,255,.14);transform:translateX(4px)}
+.chat-article-link a{
+    color:#a89bff!important;text-decoration:none;font-weight:600;font-size:.92rem;flex:1;
+}
+.chat-article-link a:hover{color:#c5bfff!important;text-decoration:underline}
+.chat-article-source{
+    font-size:.7rem;color:#888e99;text-transform:uppercase;font-weight:700;letter-spacing:.5px;
+}
+.chat-brief{
+    background:rgba(91,218,125,.06);border:1px solid rgba(91,218,125,.18);
+    border-radius:10px;padding:.8rem 1.1rem;margin:.5rem 0;
+    font-size:.9rem;line-height:1.6;color:#c8ffe0!important;font-style:italic;
+}
+.chat-external-box{
+    background:rgba(255,183,77,.05);border-left:4px solid #ffb74d;
+    border-radius:8px;padding:1.1rem 1.3rem;margin:.5rem 0;
+    font-size:.9rem;line-height:1.75;color:#d8d9de!important;
+}
+.chat-external-box strong{color:#ffb74d!important}
 </style>""", unsafe_allow_html=True)
 
 
@@ -564,24 +589,113 @@ with tab_chat:
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
+    def _render_chat_response(result: dict, msg_idx: int):
+        """Render a structured chat response with article links and summary buttons."""
+        if result.get("found") and result.get("matched_articles"):
+            st.markdown("✅ **Yes, there's news about this in today's articles!**")
+            if result.get("brief"):
+                st.markdown(
+                    f'<div class="chat-brief">{result["brief"]}</div>',
+                    unsafe_allow_html=True,
+                )
+            for art_idx, art in enumerate(result["matched_articles"]):
+                st.markdown(
+                    f'<div class="chat-article-link">'
+                    f'<span>📰</span>'
+                    f'<a href="{art["url"]}" target="_blank">{art["title"]}</a>'
+                    f'<span class="chat-article-source">{art["source"]}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                summary_key = f"chat_sum_{msg_idx}_{art_idx}"
+                if summary_key not in st.session_state:
+                    if st.button("📝 Get Summary", key=f"btn_cs_{msg_idx}_{art_idx}"):
+                        with st.spinner("Generating summary..."):
+                            art_copy = dict(art)
+                            if len(art_copy.get("content", "")) < 200:
+                                body = fetch_article_body(art_copy["url"])
+                                if body:
+                                    art_copy["content"] = body
+                            summary = summarize_article(art_copy)
+                            st.session_state[summary_key] = summary
+                        st.markdown(
+                            f'<div class="summary-box">{_md(summary)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.markdown(
+                        f'<div class="summary-box">{_md(st.session_state[summary_key])}</div>',
+                        unsafe_allow_html=True,
+                    )
+            if result.get("response"):
+                st.markdown("")
+                st.markdown(result["response"])
+        else:
+            web_results = result.get("web_results", [])
+            if web_results:
+                st.markdown(
+                    "🌐 **Not in today's articles, but here's what I found "
+                    "from the web (last 48 hours):**"
+                )
+                st.markdown(
+                    f'<div class="chat-external-box">'
+                    f'{_md(result.get("response", "No information available."))}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown("**📎 Sources:**")
+                for wr in web_results:
+                    src_label = wr.get("source", "")
+                    src_html = (
+                        f'<span class="chat-article-source">{src_label}</span>'
+                        if src_label else ""
+                    )
+                    st.markdown(
+                        f'<div class="chat-article-link">'
+                        f'<span>🔗</span>'
+                        f'<a href="{wr["url"]}" target="_blank">{wr["title"]}</a>'
+                        f'{src_html}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    f'<div class="chat-external-box">'
+                    f'<strong>🔍 No recent news found about this topic in the '
+                    f'last 48 hours.</strong><br><br>'
+                    f'{_md(result.get("response", "No information available."))}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
     # Display chat history
-    for msg in st.session_state.chat_history:
+    for idx, msg in enumerate(st.session_state.chat_history):
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            if msg["role"] == "assistant" and "result" in msg:
+                _render_chat_response(msg["result"], idx)
+            else:
+                st.markdown(msg["content"])
 
     # Chat input
     if prompt := st.chat_input("Ask about today's tech news..."):
-        # Show user message
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                response = chat_about_news(articles, prompt, st.session_state.chat_history[:-1])
-            st.markdown(response)
-        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                history_for_ai = [
+                    {"role": h["role"], "content": h["content"]}
+                    for h in st.session_state.chat_history[:-1]
+                ]
+                result = chat_about_news(articles, prompt, history_for_ai)
+            _render_chat_response(result, len(st.session_state.chat_history))
+
+        st.session_state.chat_history.append({
+            "role": "assistant",
+            "content": result["response"],
+            "result": result,
+        })
 
 
 # ━━ Tab 5: How It Works ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
